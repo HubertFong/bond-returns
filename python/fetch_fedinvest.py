@@ -7,6 +7,10 @@ marketable Treasury security each business day. It is free and needs no key.
 The GitHub Actions workflow runs this before building the site; the front-end
 and `bond_returns.py --source fedinvest` both read the JSON it writes.
 
+How: load the "Historical Prices" form (it carries a CSRF token and session
+cookie), submit it for a date (priceDate=YYYY-MM-DD) and read the price table
+on the result page. Today is tried first, then earlier business days.
+
 Only fixed-coupon notes and bonds are kept (bills, TIPS and FRNs use other
 conventions). If FedInvest cannot be reached or parsed, the previously deployed
 file is carried over, and failing that the existing file is left alone, so the
@@ -14,7 +18,7 @@ site keeps working and shows the data as stale instead of breaking.
 
 Usage:
     python fetch_fedinvest.py --out public/data/treasury_prices.json
-    python fetch_fedinvest.py --parse saved.csv          # parse a saved file, print summary
+    python fetch_fedinvest.py --parse saved.html         # parse a saved result page (or CSV)
 Standard library only.
 """
 from __future__ import annotations

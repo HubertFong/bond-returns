@@ -27,9 +27,10 @@ These are not intraday quotes; free live bond quotes are effectively unavailable
 How the prices get to the page:
 
 1. A GitHub Actions workflow (`.github/workflows/pages.yml`) runs on weekdays at 18:47 and 22:47 UTC, and on every push.
-2. It runs `python/fetch_fedinvest.py`, which keeps only fixed-coupon notes and bonds and writes `data/treasury_prices.json`.
+2. It runs `python/fetch_fedinvest.py`. The script submits FedInvest's "Historical Prices" form for the latest business day, reads the price table (about 330 notes and bonds), keeps only fixed-coupon notes and bonds, and writes `data/treasury_prices.json`.
 3. The workflow deploys that file with the site, and the page reads it through one function, `getLivePrice()` in `src/feed.ts`.
 4. If FedInvest is unreachable, the previously deployed file is carried over, so the page shows `STALE` instead of breaking.
+5. After every deploy, a smoke test loads the live page and price file. It logs the price date and row count, and raises a warning if the prices are not fresh.
 
 The `public/data/treasury_prices.json` file in the repo is an **illustrative sample** for local development and is labelled as such on the page.
 
