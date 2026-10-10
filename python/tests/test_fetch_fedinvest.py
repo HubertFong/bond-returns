@@ -58,6 +58,11 @@ class FormTests(unittest.TestCase):
             ("_csrf", "tok-123"), ("priceDateMonth", "10"), ("priceDateDay", "09"),
             ("priceDateYear", "2026"), ("fileType", "csv"), ("btnSubmit", "Show Prices")])
 
+    def test_fields_outside_a_form_tag(self):
+        form = parse_form('<div><select name="priceDateDay"><option value="9">9</option></select>'
+                          '<input type="hidden" name="_csrf" value="t"></div>')
+        self.assertEqual(form_payload(form, date(2026, 10, 9))[:2], [("priceDateDay", "9"), ("_csrf", "t")])
+
     def test_no_form(self):
         self.assertIsNone(parse_form("<html><body>maintenance</body></html>"))
 

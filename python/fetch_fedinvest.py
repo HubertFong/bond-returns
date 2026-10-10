@@ -64,21 +64,21 @@ class FormParser(HTMLParser):
 
     def __init__(self):
         super().__init__()
+        self.loose = {"action": "", "fields": []}     # fields outside any <form>
         self.forms, self._form, self._select = [], None, None
 
     def handle_starttag(self, tag, attrs):
         a = {k: (v or "") for k, v in attrs}
+        target = self._form or self.loose
         if tag == "form":
             self._form = {"action": a.get("action", ""), "fields": []}
             self.forms.append(self._form)
-        elif self._form is None:
-            return
         elif tag in ("input", "button"):
-            self._form["fields"].append({"tag": tag, "type": a.get("type", "text").lower(),
-                                         "name": a.get("name", ""), "value": a.get("value", "")})
+            target["fields"].append({"tag": tag, "type": a.get("type", "text").lower(),
+                                     "name": a.get("name", ""), "value": a.get("value", "")})
         elif tag == "select":
             self._select = {"tag": "select", "type": "select", "name": a.get("name", ""), "options": []}
-            self._form["fields"].append(self._select)
+            target["fields"].append(self._select)
         elif tag == "option" and self._select is not None:
             self._select["options"].append(a.get("value", ""))
 
@@ -93,7 +93,7 @@ def parse_form(html: str):
     """The price-date form on the FedInvest page, or None."""
     p = FormParser()
     p.feed(html)
-    for f in p.forms:
+    for f in p.forms + [p.loose]:
         if any("day" in fld["name"].lower() for fld in f["fields"]):
             return f
     return None
@@ -144,8 +144,14 @@ def session() -> urllib.request.OpenerDirector:
             with _opener.open(urllib.request.Request(FORM, headers=BROWSER), timeout=30) as resp:
                 html = resp.read().decode("utf-8", errors="replace")
             _form = parse_form(html)
-            fields = [f"{f['name']}({f['type']})" for f in _form["fields"] if f["name"]] if _form else []
-            print(f"  form page: {len(html)} bytes; form action={_form and _form['action']!r} fields={fields}")
+            if _form:
+                fields = [f"{f['name']}({f['type']})" for f in _form["fields"] if f["name"]]
+                print(f"  form page: {len(html)} bytes; form action={_form['action']!r} fields={fields}")
+            else:                                    # show what the page is, to adapt the parser
+                print(f"  form page: {len(html)} bytes, no date fields found")
+                print("::group::FedInvest form page HTML")
+                print(html)
+                print("::endgroup::")
         except Exception as exc:
             print(f"  form page: {describe(exc)}")
     return _opener
