@@ -1,0 +1,9 @@
+{"source":"SAMPLE - illustrative prices, not market data","status":"sample","price_date":"2026-10-09","fetched_at":"2026-10-09T18:00:00+00:00","securities":[
+{"cusip":"91282CMA6","type":"MARKET BASED NOTE","rate":0.04125,"maturity":"2027-01-31","buy":100.15625,"sell":100.125,"eod":100.140625},
+{"cusip":"91282CLN9","type":"MARKET BASED NOTE","rate":0.035,"maturity":"2028-09-30","buy":99.4375,"sell":99.40625,"eod":99.421875},
+{"cusip":"91282CLR0","type":"MARKET BASED NOTE","rate":0.04125,"maturity":"2031-10-31","buy":100.6875,"sell":100.65625,"eod":100.671875},
+{"cusip":"91282CLW9","type":"MARKET BASED NOTE","rate":0.0425,"maturity":"2034-11-15","buy":99.21875,"sell":99.1875,"eod":99.203125},
+{"cusip":"91282CMM0","type":"MARKET BASED NOTE","rate":0.04625,"maturity":"2035-02-15","buy":101.75,"sell":101.71875,"eod":101.734375},
+{"cusip":"912810TX6","type":"MARKET BASED BOND","rate":0.0475,"maturity":"2053-11-15","buy":97.53125,"sell":97.46875,"eod":97.5},
+{"cusip":"912810UF3","type":"MARKET BASED BOND","rate":0.04625,"maturity":"2055-02-15","buy":95.875,"sell":95.8125,"eod":95.84375}
+]}

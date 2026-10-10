@@ -1,0 +1,66 @@
+name: Build and deploy
+
+# Fetches the latest US Treasury FedInvest end-of-day prices, runs the Python and
+# TypeScript test suites, builds the site and publishes it to GitHub Pages.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekdays, after FedInvest publishes (early afternoon New York) and again in the evening.
+    - cron: "47 18 * * 1-5"
+    - cron: "47 22 * * 1-5"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Python reference checks
+        run: |
+          pip install scipy
+          python python/bond_returns.py --validate
+          python -m unittest discover -s python/tests -v
+
+      - name: Fetch Treasury prices (FedInvest)
+        run: python python/fetch_fedinvest.py --out public/data/treasury_prices.json
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+      - uses: actions/upload-pages-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

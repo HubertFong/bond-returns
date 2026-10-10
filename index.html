@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bond Returns</title>
+    <meta name="description" content="Yield to maturity, current yield and holding-period return for a fixed-coupon bond, recalculated from free US Treasury end-of-day prices." />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232456c9'/%3E%3Cpath d='M7 22 L13 15 L18 19 L25 10' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <header class="top">
+      <div>
+        <h1>Bond Returns</h1>
+        <p class="sub">Yield to maturity, current yield and holding-period return for a fixed-coupon bond, recalculated from US Treasury end-of-day prices.</p>
+      </div>
+      <div class="status" aria-live="polite">
+        <span id="badge" class="badge">LOADING</span>
+        <span id="asof" class="muted"></span>
+        <span id="countdown" class="muted"></span>
+      </div>
+    </header>
+
+    <p id="sampleNote" class="note" hidden>
+      Showing the bundled <strong>sample</strong> price file. The deployed site replaces it with the latest FedInvest prices each business day.
+    </p>
+
+    <main class="grid">
+      <form id="form" class="panel" autocomplete="off" novalidate>
+        <fieldset>
+          <legend>Price source</legend>
+          <div class="seg" role="radiogroup">
+            <label><input type="radio" name="source" id="srcFedinvest" value="fedinvest" checked /> US Treasury (FedInvest)</label>
+            <label><input type="radio" name="source" id="srcManual" value="manual" /> Manual price</label>
+          </div>
+          <label id="cusipRow">Treasury CUSIP
+            <input id="cusip" list="cusips" placeholder="Search CUSIP, e.g. 91282C" spellcheck="false" />
+            <small id="cusipInfo" class="muted"></small>
+          </label>
+          <datalist id="cusips"></datalist>
+          <label id="manualRow" hidden>Clean price (per 100)
+            <input id="manualPrice" type="number" step="0.0001" min="0" inputmode="decimal" />
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Bond</legend>
+          <div class="two">
+            <label>Face value <input id="faceValue" type="number" step="any" min="0" inputmode="decimal" /></label>
+            <label>Coupon (%) <input id="couponPct" type="number" step="any" min="0" inputmode="decimal" /></label>
+            <label>Coupons per year
+              <select id="frequency">
+                <option value="1">1 (annual)</option>
+                <option value="2">2 (semi-annual)</option>
+                <option value="4">4 (quarterly)</option>
+                <option value="12">12 (monthly)</option>
+              </select>
+            </label>
+            <label>Maturity <input id="maturity" type="date" /></label>
+            <label>Day count
+              <select id="dayCount">
+                <option>30/360</option>
+                <option>ACT/ACT</option>
+                <option>ACT/365</option>
+              </select>
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Settlement</legend>
+          <div class="two">
+            <label>Lag (business days) <input id="settleLag" type="number" min="0" step="1" /></label>
+            <label>Fixed date (optional) <input id="settleDate" type="date" /></label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Your purchase</legend>
+          <div class="two">
+            <label>Settlement date <input id="purchaseSettle" type="date" /></label>
+            <label>Clean price paid <input id="purchaseClean" type="number" step="0.0001" min="0" inputmode="decimal" /></label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Refresh</legend>
+          <label>Polling interval (seconds) <input id="intervalS" type="number" min="5" step="1" /></label>
+        </fieldset>
+
+        <div class="actions">
+          <button type="button" id="refresh">Refresh now</button>
+          <button type="button" id="example" class="ghost">Load worked example</button>
+        </div>
+      </form>
+
+      <section class="results">
+        <div id="error" class="error" role="alert" hidden></div>
+        <div class="kpis">
+          <div class="kpi"><span class="label">Yield to maturity</span><span id="kYtm" class="value">—</span><span class="hint">street convention</span></div>
+          <div class="kpi"><span class="label">Current yield</span><span id="kCy" class="value">—</span><span class="hint">coupon / clean price</span></div>
+          <div class="kpi"><span class="label">Holding-period return</span><span id="kHpr" class="value">—</span><span class="hint">since purchase</span></div>
+          <div class="kpi"><span class="label">HPR annualised</span><span id="kAnn" class="value">—</span><span id="kAnnNote" class="hint">compound, ACT/365</span></div>
+        </div>
+
+        <table id="detailTable" class="detail"><tbody id="detail"></tbody></table>
+
+        <h2>Cash-flow schedule</h2>
+        <div class="scroll">
+          <table class="flows">
+            <thead><tr><th>Date</th><th>Coupon</th><th>Principal</th><th>Cash flow</th><th>t (periods)</th><th>Discount factor</th><th>PV</th></tr></thead>
+            <tbody id="flowsBody"></tbody>
+          </table>
+        </div>
+
+        <h2>Update log</h2>
+        <ol id="log" class="log"></ol>
+      </section>
+    </main>
+
+    <footer>
+      Prices: <a href="https://www.treasurydirect.gov/GA-FI/FedInvest/selectSecurityPriceDate">US Treasury FedInvest</a> official end-of-day prices for marketable notes and bonds, refreshed each business day. They are not live intraday quotes.
+      Method and worked example: <a href="https://github.com/HubertFong/bond-returns/blob/main/docs/METHOD.md">docs/METHOD.md</a>.
+      Not investment advice.
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
