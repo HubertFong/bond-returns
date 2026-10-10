@@ -21,17 +21,53 @@ from __future__ import annotations
 
 import argparse
 import csv
+import http.cookiejar
 import io
 import json
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
 
+FORM = "https://www.treasurydirect.gov/GA-FI/FedInvest/selectSecurityPriceDate"
 URL = "https://www.treasurydirect.gov/GA-FI/FedInvest/securityPriceDetail"
 DEPLOYED = "https://hubertfong.github.io/bond-returns/data/treasury_prices.json"
 KEEP_TYPES = {"MARKET BASED NOTE", "MARKET BASED BOND"}
 HEADERS = {"User-Agent": "bond-returns/1.0 (+https://github.com/HubertFong/bond-returns)"}
+# The FedInvest form is a page for people: fetch it like a browser would (load the
+# form first for its session cookies, then submit it with the usual headers).
+BROWSER = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/129.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,text/csv;q=0.8,*/*;q=0.7",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+_opener = None
+
+
+def describe(exc: Exception) -> str:
+    """One-line reason for a failed request, with the start of an error page."""
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            body = exc.read(240).decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        body = " ".join(body.split())
+        return f"HTTP {exc.code} (server: {exc.headers.get('Server', '?')}) {body!r}"
+    return f"{type(exc).__name__}: {exc}"
+
+
+def session() -> urllib.request.OpenerDirector:
+    global _opener
+    if _opener is None:
+        _opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        try:
+            with _opener.open(urllib.request.Request(FORM, headers=BROWSER), timeout=30) as resp:
+                print(f"  form page: HTTP {resp.status}, {len(resp.read())} bytes")
+        except Exception as exc:
+            print(f"  form page: {describe(exc)}")
+    return _opener
 
 
 def us_today() -> date:
@@ -55,8 +91,10 @@ def business_days_back(start: date, n: int):
 def download(day: date) -> str:
     form = {"priceDateDay": f"{day.day:02d}", "priceDateMonth": f"{day.month:02d}",
             "priceDateYear": str(day.year), "fileType": "csv", "csv": "CSV FORMAT"}
-    req = urllib.request.Request(URL, data=urllib.parse.urlencode(form).encode(), headers=HEADERS)
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    headers = {**BROWSER, "Referer": FORM, "Origin": "https://www.treasurydirect.gov",
+               "Content-Type": "application/x-www-form-urlencoded"}
+    req = urllib.request.Request(URL, data=urllib.parse.urlencode(form).encode(), headers=headers)
+    with session().open(req, timeout=30) as resp:
         return resp.read().decode("utf-8", errors="replace")
 
 
@@ -109,11 +147,16 @@ def parse(text: str) -> list:
 
 def fetch_latest(max_days: int = 7):
     """Try today, then earlier business days (holidays, not yet published)."""
+    refused = 0
     for day in business_days_back(us_today(), max_days):
         try:
             text = download(day)
         except Exception as exc:
-            print(f"  {day}: download failed: {type(exc).__name__}: {exc}")
+            print(f"  {day}: download failed: {describe(exc)}")
+            refused += isinstance(exc, urllib.error.HTTPError) and exc.code in (401, 403, 429)
+            if refused >= 2:                         # blocked, not missing data: stop asking
+                print("  access refused twice; not retrying further dates")
+                break
             continue
         rows = parse(text)
         print(f"  {day}: {len(text)} bytes, {len(rows)} notes/bonds")
