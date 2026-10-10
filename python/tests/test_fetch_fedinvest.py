@@ -50,7 +50,38 @@ FORM_HTML = """<html><body>
 </form></body></html>"""
 
 
+# The layout of the live page (October 2026): one ISO date field plus a CSRF token.
+LIVE_FORM_HTML = """<form id="gs" method="get" action="https://search.treas.gov/search">
+<input type="text" name="q" id="q" /><input type="hidden" name="sort" value="date:D:L:d1" /></form>
+<form id="fromToDate" action="/GA-FI/FedInvest/selectSecurityPriceDate" method="post">
+<td><input id="priceDate" name="priceDate" type="date" value="2026-10-09" required="required"/></td>
+<input type="submit" value="Show Prices" class="action" name="submit" />
+<div><input type="hidden" name="_csrf" value="tok-abc" /></div></form>"""
+
+RESULT_HTML = """<table class="data1"><thead><tr><th>CUSIP</th><th>SECURITY TYPE</th><th>RATE</th>
+<th>MATURITY DATE</th><th>CALL DATE</th><th>BUY</th><th>SELL</th><th>END OF DAY</th></tr></thead><tbody>
+<tr><td>912797LB1</td><td>MARKET BASED BILL</td><td>0.000</td><td>11/13/2026</td><td></td>
+<td>99.512000</td><td>99.508000</td><td>0.000000</td></tr>
+<tr><td>91282CLW9</td><td>MARKET BASED NOTE</td><td>4.250</td><td>11/15/2034</td><td></td>
+<td>99.218750</td><td>99.187500</td><td>99.203125</td></tr>
+<tr><td>91282CAB7</td><td>MARKET BASED NOTE</td><td>0.125</td><td>03/31/2027</td><td></td>
+<td>98.500000</td><td>98.468750</td><td>98.484375</td></tr></tbody></table>"""
+
+
 class FormTests(unittest.TestCase):
+    def test_live_layout_single_date_field(self):
+        form = parse_form(LIVE_FORM_HTML)
+        self.assertEqual(form["action"], "/GA-FI/FedInvest/selectSecurityPriceDate")
+        self.assertEqual(form_payload(form, date(2026, 10, 9)), [
+            ("priceDate", "2026-10-09"), ("_csrf", "tok-abc"), ("submit", "Show Prices")])
+
+    def test_html_results_table(self):
+        rows = parse(RESULT_HTML)
+        self.assertEqual([r["cusip"] for r in rows], ["91282CLW9", "91282CAB7"])
+        self.assertEqual(rows[0]["rate"], 0.0425)         # bare percent numbers
+        self.assertEqual(rows[1]["rate"], 0.00125)        # 0.125% is not 12.5%
+        self.assertEqual((rows[0]["maturity"], rows[0]["eod"]), ("2034-11-15", 99.203125))
+
     def test_finds_the_price_form_and_fills_it_like_a_browser(self):
         form = parse_form(FORM_HTML)
         self.assertEqual(form["action"], "/GA-FI/FedInvest/securityPriceDetail")

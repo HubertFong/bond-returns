@@ -94,7 +94,8 @@ def parse_form(html: str):
     p = FormParser()
     p.feed(html)
     for f in p.forms + [p.loose]:
-        if any("day" in fld["name"].lower() for fld in f["fields"]):
+        if any("day" in fld["name"].lower() or "date" in fld["name"].lower() or fld["type"] == "date"
+               for fld in f["fields"]):
             return f
     return None
 
@@ -123,6 +124,8 @@ def form_payload(form: dict, day: date) -> list:
             data.append((name, _pick(fld.get("options", []), day.month, 2)))
         elif "year" in low:
             data.append((name, _pick(fld.get("options", []), day.year, 4)))
+        elif typ == "date" or "date" in low:          # <input type="date">: ISO format
+            data.append((name, day.isoformat()))
         elif typ == "radio" and "csv" in fld["value"].lower():
             data.append((name, fld["value"]))
         elif typ == "submit" and (submit is None or "csv" in (fld["value"] + name).lower()):
@@ -191,12 +194,6 @@ def download(day: date) -> str:
         return resp.read().decode("utf-8", errors="replace")
 
 
-def _rate(s: str) -> float:
-    """'0.04250000' (decimal) or '4.250%' (percent) -> 0.0425."""
-    s = s.strip()
-    return float(s.rstrip("%")) / 100 if s.endswith("%") else float(s)
-
-
 def _date(s: str) -> str:
     s = s.strip()
     for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m/%d/%y"):
@@ -216,25 +213,79 @@ def _price(s: str):
     return v if v > 0 else None
 
 
+class TableParser(HTMLParser):
+    """Text of every <tr>'s cells."""
+
+    def __init__(self):
+        super().__init__()
+        self.rows, self._row, self._cell = [], None, None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "tr":
+            self._row = []
+        elif tag in ("td", "th") and self._row is not None:
+            self._cell = []
+
+    def handle_data(self, data):
+        if self._cell is not None:
+            self._cell.append(data)
+
+    def handle_endtag(self, tag):
+        if tag in ("td", "th") and self._cell is not None:
+            self._row.append(" ".join("".join(self._cell).split()))
+            self._cell = None
+        elif tag == "tr" and self._row is not None:
+            self.rows.append(self._row)
+            self._row = None
+
+
+COLUMNS = ("cusip", "type", "rate", "maturity", "call", "buy", "sell", "eod")
+HEADER_NAMES = {"cusip": "cusip", "security type": "type", "rate": "rate", "maturity date": "maturity",
+                "call date": "call", "buy": "buy", "sell": "sell", "end of day": "eod"}
+
+
+def rows_of(text: str) -> list:
+    if "<table" in text.lower():
+        p = TableParser()
+        p.feed(text)
+        return p.rows
+    return list(csv.reader(io.StringIO(text)))
+
+
 def parse(text: str) -> list:
-    """FedInvest CSV rows: CUSIP, SECURITY TYPE, RATE, MATURITY DATE, CALL DATE, BUY, SELL, END OF DAY.
-    There is no header row; anything that does not look like a data row is skipped."""
-    out = []
-    for row in csv.reader(io.StringIO(text)):
-        if len(row) < 8:
+    """FedInvest prices, from the CSV download or the HTML results table. Columns:
+    CUSIP, SECURITY TYPE, RATE, MATURITY DATE, CALL DATE, BUY, SELL, END OF DAY
+    (a header row, if present, sets the order). Non-data rows are skipped."""
+    col = {name: i for i, name in enumerate(COLUMNS)}
+    found = []
+    for row in rows_of(text):
+        names = [HEADER_NAMES.get(c.strip().lower()) for c in row]
+        if "cusip" in names and "eod" in names:          # header row: map columns by name
+            col = {n: i for i, n in enumerate(names) if n}
             continue
-        cusip, typ = row[0].strip().upper(), row[1].strip().upper()
+        if len(row) <= max(col.values()):
+            continue
+        cusip, typ = row[col["cusip"]].strip().upper(), row[col["type"]].strip().upper()
         if len(cusip) != 9 or not cusip.isalnum() or typ not in KEEP_TYPES:
             continue
-        buy, sell, eod = _price(row[5]), _price(row[6]), _price(row[7])
+        buy, sell, eod = _price(row[col["buy"]]), _price(row[col["sell"]]), _price(row[col["eod"]])
         if eod is None and buy and sell:
             eod = round((buy + sell) / 2, 6)        # mid if the end-of-day column is empty
         if eod is None:
             continue
-        out.append({"cusip": cusip, "type": typ, "rate": _rate(row[2]), "maturity": _date(row[3]),
-                    "buy": buy, "sell": sell, "eod": eod})
+        found.append((row[col["rate"]].strip(), {"cusip": cusip, "type": typ, "rate": None,
+                                                  "maturity": _date(row[col["maturity"]]),
+                                                  "buy": buy, "sell": sell, "eod": eod}))
+    # Coupon units: '4.250%' is a percent; bare numbers are a percent if any coupon is
+    # above 1 (the HTML table), otherwise decimals (the CSV file: 0.04250000).
+    nums = [float(r.rstrip("%").replace(",", "")) for r, _ in found]
+    percent = any(r.endswith("%") for r, _ in found) or (bool(nums) and max(nums) > 1)
+    out = []
+    for (_, rec), n in zip(found, nums):
+        rec["rate"] = round(n / 100, 10) if percent else n
+        out.append(rec)
     if out and max(r["rate"] for r in out) > 0.25:  # a 25% Treasury coupon means a format change
-        raise ValueError("RATE column does not look like a decimal coupon; FedInvest format changed?")
+        raise ValueError("RATE column does not look like a coupon; FedInvest format changed?")
     return out
 
 
@@ -254,9 +305,11 @@ def fetch_latest(max_days: int = 7):
         rows = parse(text)
         print(f"  {day}: {len(text)} bytes, {len(rows)} notes/bonds")
         if not rows:
-            print("    first bytes:", text[:300].replace("\n", " | "))
+            print("::group::FedInvest response (first 6000 characters)")
+            print(text[:6000])
+            print("::endgroup::")
             continue
-        print("    sample rows:", *text.strip().splitlines()[:3], sep="\n      ")
+        print("    sample rows:", *rows[:3], sep="\n      ")
         return day, rows
     return None, []
 
