@@ -29,6 +29,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
+from html.parser import HTMLParser
 
 FORM = "https://www.treasurydirect.gov/GA-FI/FedInvest/selectSecurityPriceDate"
 URL = "https://www.treasurydirect.gov/GA-FI/FedInvest/securityPriceDetail"
@@ -58,13 +59,93 @@ def describe(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+class FormParser(HTMLParser):
+    """Collects each <form>: its action and its fields (inputs, selects with options)."""
+
+    def __init__(self):
+        super().__init__()
+        self.forms, self._form, self._select = [], None, None
+
+    def handle_starttag(self, tag, attrs):
+        a = {k: (v or "") for k, v in attrs}
+        if tag == "form":
+            self._form = {"action": a.get("action", ""), "fields": []}
+            self.forms.append(self._form)
+        elif self._form is None:
+            return
+        elif tag in ("input", "button"):
+            self._form["fields"].append({"tag": tag, "type": a.get("type", "text").lower(),
+                                         "name": a.get("name", ""), "value": a.get("value", "")})
+        elif tag == "select":
+            self._select = {"tag": "select", "type": "select", "name": a.get("name", ""), "options": []}
+            self._form["fields"].append(self._select)
+        elif tag == "option" and self._select is not None:
+            self._select["options"].append(a.get("value", ""))
+
+    def handle_endtag(self, tag):
+        if tag == "form":
+            self._form = None
+        elif tag == "select":
+            self._select = None
+
+
+def parse_form(html: str):
+    """The price-date form on the FedInvest page, or None."""
+    p = FormParser()
+    p.feed(html)
+    for f in p.forms:
+        if any("day" in fld["name"].lower() for fld in f["fields"]):
+            return f
+    return None
+
+
+def _pick(options, n: int, width: int) -> str:
+    """The option whose number is n ('9' or '09'); else n zero-padded."""
+    for o in options:
+        if o.strip().isdigit() and int(o) == n:
+            return o
+    return f"{n:0{width}d}"
+
+
+def form_payload(form: dict, day: date) -> list:
+    """Fill the form like a browser: keep hidden fields (the CSRF token), set the
+    date, choose the CSV file type and press the CSV button."""
+    data, submit = [], None
+    for fld in form["fields"]:
+        name, typ, low = fld["name"], fld["type"], fld["name"].lower()
+        if not name:
+            continue
+        if typ == "hidden":
+            data.append((name, fld["value"]))
+        elif "day" in low:
+            data.append((name, _pick(fld.get("options", []), day.day, 2)))
+        elif "month" in low:
+            data.append((name, _pick(fld.get("options", []), day.month, 2)))
+        elif "year" in low:
+            data.append((name, _pick(fld.get("options", []), day.year, 4)))
+        elif typ == "radio" and "csv" in fld["value"].lower():
+            data.append((name, fld["value"]))
+        elif typ == "submit" and (submit is None or "csv" in (fld["value"] + name).lower()):
+            submit = (name, fld["value"])
+    if submit:
+        data.append(submit)
+    return data
+
+
+_form = None
+
+
 def session() -> urllib.request.OpenerDirector:
-    global _opener
+    """Cookie-keeping opener; on first use loads the form page and parses its form."""
+    global _opener, _form
     if _opener is None:
         _opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
         try:
             with _opener.open(urllib.request.Request(FORM, headers=BROWSER), timeout=30) as resp:
-                print(f"  form page: HTTP {resp.status}, {len(resp.read())} bytes")
+                html = resp.read().decode("utf-8", errors="replace")
+            _form = parse_form(html)
+            fields = [f"{f['name']}({f['type']})" for f in _form["fields"] if f["name"]] if _form else []
+            print(f"  form page: {len(html)} bytes; form action={_form and _form['action']!r} fields={fields}")
         except Exception as exc:
             print(f"  form page: {describe(exc)}")
     return _opener
@@ -89,12 +170,18 @@ def business_days_back(start: date, n: int):
 
 
 def download(day: date) -> str:
-    form = {"priceDateDay": f"{day.day:02d}", "priceDateMonth": f"{day.month:02d}",
-            "priceDateYear": str(day.year), "fileType": "csv", "csv": "CSV FORMAT"}
+    opener = session()
+    if _form:
+        data = form_payload(_form, day)
+        url = urllib.parse.urljoin(FORM, _form["action"]) if _form["action"] else URL
+    else:                                            # page layout unknown: last known field names
+        data = [("priceDateDay", f"{day.day:02d}"), ("priceDateMonth", f"{day.month:02d}"),
+                ("priceDateYear", str(day.year)), ("fileType", "csv"), ("csv", "CSV FORMAT")]
+        url = URL
     headers = {**BROWSER, "Referer": FORM, "Origin": "https://www.treasurydirect.gov",
                "Content-Type": "application/x-www-form-urlencoded"}
-    req = urllib.request.Request(URL, data=urllib.parse.urlencode(form).encode(), headers=headers)
-    with session().open(req, timeout=30) as resp:
+    req = urllib.request.Request(url, data=urllib.parse.urlencode(data).encode(), headers=headers)
+    with opener.open(req, timeout=30) as resp:
         return resp.read().decode("utf-8", errors="replace")
 
 

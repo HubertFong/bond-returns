@@ -64,3 +64,22 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: Smoke-test the live site
+        env:
+          SITE: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          for i in 1 2 3 4 5 6; do
+            curl -fsS "$SITE" | grep -q "<title>Bond Returns</title>" && break
+            echo "page not live yet, retrying"; sleep 10
+          done
+          curl -fsS "$SITE" | grep -q "<title>Bond Returns</title>"
+          curl -fsS "${SITE}data/treasury_prices.json" -o prices.json
+          python3 - <<'EOF'
+          import json
+          d = json.load(open("prices.json"))
+          print("live price file: status=%s price_date=%s securities=%d"
+                % (d["status"], d["price_date"], len(d["securities"])))
+          if d["status"] != "fresh":
+              print("::warning::The live site is not showing fresh FedInvest prices (status: %s)" % d["status"])
+          EOF
