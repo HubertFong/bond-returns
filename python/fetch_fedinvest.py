@@ -142,9 +142,12 @@ def form_payload(form: dict, day: date) -> list:
 _form = None
 
 
-def session() -> urllib.request.OpenerDirector:
-    """Cookie-keeping opener; on first use loads the form page and parses its form."""
+def session(fresh: bool = False) -> urllib.request.OpenerDirector:
+    """Cookie-keeping opener; on first use (or when fresh) loads the form page and
+    parses its form, so each request carries a new session and CSRF token."""
     global _opener, _form
+    if fresh:
+        _opener = _form = None
     if _opener is None:
         _opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
         try:
@@ -183,7 +186,7 @@ def business_days_back(start: date, n: int):
 
 
 def download(day: date) -> str:
-    opener = session()
+    opener = session(fresh=True)                     # new session + token for every date tried
     if _form:
         data = form_payload(_form, day)
         url = urllib.parse.urljoin(FORM, _form["action"]) if _form["action"] else URL
@@ -293,10 +296,11 @@ def parse(text: str) -> list:
     return out
 
 
-def fetch_latest(max_days: int = 7):
-    """Try today, then earlier business days (holidays, not yet published)."""
+def fetch_latest(start: date | None = None, max_days: int = 7):
+    """Try `start` (default today in New York), then earlier business days: holidays
+    and not-yet-published days return no rows (or a 400/404) and are skipped."""
     refused = 0
-    for day in business_days_back(us_today(), max_days):
+    for day in business_days_back(start or us_today(), max_days):
         try:
             text = download(day)
         except Exception as exc:
@@ -336,6 +340,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--out", default="public/data/treasury_prices.json")
     ap.add_argument("--parse", help="parse a saved FedInvest CSV and print a summary")
+    ap.add_argument("--start", type=date.fromisoformat,
+                    help="first date to try, YYYY-MM-DD (default: today in New York)")
     args = ap.parse_args()
 
     if args.parse:
@@ -345,7 +351,7 @@ def main() -> int:
         return 0
 
     print("Fetching FedInvest end-of-day prices")
-    day, rows = fetch_latest()
+    day, rows = fetch_latest(args.start)
     if rows:
         data = {"source": "US Treasury FedInvest end-of-day prices", "status": "fresh",
                 "price_date": day.isoformat(),

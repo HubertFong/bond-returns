@@ -7,7 +7,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from datetime import date  # noqa: E402
 
-from fetch_fedinvest import form_payload, parse, parse_form  # noqa: E402
+from fetch_fedinvest import business_days_back, form_payload, parse, parse_form  # noqa: E402
 
 FIXTURE = pathlib.Path(__file__).with_name("fedinvest_sample.csv").read_text()
 
@@ -93,6 +93,11 @@ class FormTests(unittest.TestCase):
         form = parse_form('<div><select name="priceDateDay"><option value="9">9</option></select>'
                           '<input type="hidden" name="_csrf" value="t"></div>')
         self.assertEqual(form_payload(form, date(2026, 10, 9))[:2], [("priceDateDay", "9"), ("_csrf", "t")])
+
+    def test_dates_tried_skip_weekends(self):
+        # Sunday -> Friday first; Monday holiday (Columbus Day 2026) -> Monday, then Friday
+        self.assertEqual(list(business_days_back(date(2026, 10, 11), 2)), [date(2026, 10, 9), date(2026, 10, 8)])
+        self.assertEqual(list(business_days_back(date(2026, 10, 12), 2)), [date(2026, 10, 12), date(2026, 10, 9)])
 
     def test_no_form(self):
         self.assertIsNone(parse_form("<html><body>maintenance</body></html>"))

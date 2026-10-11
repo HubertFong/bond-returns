@@ -7,6 +7,11 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      start_date:
+        description: "First price date to try, YYYY-MM-DD (blank = today in New York)"
+        required: false
+        default: ""
   schedule:
     # Weekdays, after FedInvest publishes (early afternoon New York) and again in the evening.
     - cron: "47 18 * * 1-5"
@@ -38,7 +43,9 @@ jobs:
           python -m unittest discover -s python/tests -v
 
       - name: Fetch Treasury prices (FedInvest)
-        run: python python/fetch_fedinvest.py --out public/data/treasury_prices.json
+        env:
+          START_DATE: ${{ inputs.start_date }}
+        run: python python/fetch_fedinvest.py --out public/data/treasury_prices.json ${START_DATE:+--start "$START_DATE"}
 
       - uses: actions/setup-node@v5
         with:
