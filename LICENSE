@@ -1,0 +1,19 @@
+Copyright (c) 2026 Hubert Fong. All rights reserved.
+
+This software, including its source code, documentation and other files in this
+repository (the "Software"), is proprietary and confidential to the copyright holder.
+
+No licence or right is granted to use, copy, modify, merge, publish, distribute,
+sublicense or sell the Software, in whole or in part, except under a separate written
+agreement signed by the copyright holder. Being able to view the Software in a public
+repository does not grant any such right.
+
+Third-party components used to build and test the Software (listed in
+package-lock.json) remain under their own licences. Market data shown by the Software
+is published by the United States Department of the Treasury.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NON-INFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR ITS USE. NOTHING IN THE SOFTWARE IS INVESTMENT ADVICE.

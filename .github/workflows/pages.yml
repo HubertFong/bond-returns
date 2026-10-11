@@ -1,11 +1,18 @@
 name: Build and deploy
 
-# Fetches the latest US Treasury FedInvest end-of-day prices, runs the Python and
-# TypeScript test suites, builds the site and publishes it to GitHub Pages.
+# One pipeline for everything: test the maths, fetch the latest US Treasury prices,
+# build the page and publish it to GitHub Pages, then check the live site.
+#
+# What stops a deploy: any failing test, a type error, or a failed build.
+# What only warns:     a failed price fetch (the last prices are carried over and the
+#                      page shows them as STALE) and a live site without fresh prices.
+#
+# Run it by hand from the Actions tab ("Run workflow"). The optional start_date makes
+# the fetch begin from a chosen day, e.g. a holiday, to check the fallback.
 on:
   push:
     branches: [main]
-  pull_request:
+  pull_request:            # tests and build only; nothing is deployed
   workflow_dispatch:
     inputs:
       start_date:
@@ -13,16 +20,17 @@ on:
         required: false
         default: ""
   schedule:
-    # Weekdays, after FedInvest publishes (early afternoon New York) and again in the evening.
+    # Weekdays (UTC): after FedInvest publishes in the early afternoon in New York, and
+    # again in the evening. GitHub pauses schedules after 60 days without repo activity.
     - cron: "47 18 * * 1-5"
     - cron: "47 22 * * 1-5"
 
-permissions:
+permissions:              # the minimum Pages deployment needs
   contents: read
   pages: write
   id-token: write
 
-concurrency:
+concurrency:              # one deployment at a time; queued runs wait, none are cancelled
   group: pages-${{ github.ref }}
   cancel-in-progress: false
 
@@ -36,12 +44,15 @@ jobs:
         with:
           python-version: "3.12"
 
+      # The reference maths (14 checks) and the price-fetch parser tests.
       - name: Python reference checks
         run: |
           pip install scipy
           python python/bond_returns.py --validate
           python -m unittest discover -s python/tests -v
 
+      # Writes public/data/treasury_prices.json. Never fails the build: on error it
+      # carries over the deployed file and prints a ::warning:: instead.
       - name: Fetch Treasury prices (FedInvest)
         env:
           START_DATE: ${{ inputs.start_date }}
@@ -53,8 +64,8 @@ jobs:
           cache: npm
 
       - run: npm ci
-      - run: npm test
-      - run: npm run build
+      - run: npm test           # 975 tests, incl. the cross-check against the Python reference
+      - run: npm run build      # type check (tsc) and production build into dist/
 
       - uses: actions/upload-pages-artifact@v4
         if: github.event_name != 'pull_request'
@@ -72,6 +83,7 @@ jobs:
       - id: deployment
         uses: actions/deploy-pages@v4
 
+      # Load the live page and price file; warn if the prices are not fresh.
       - name: Smoke-test the live site
         env:
           SITE: ${{ steps.deployment.outputs.page_url }}

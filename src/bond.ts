@@ -1,13 +1,28 @@
-// Bond maths: a one-to-one port of python/bond_returns.py (sections 2-4).
-//
-// Conventions (see docs/METHOD.md):
-//   * Prices per 100 face; yields as decimals (0.065 = 6.5%).
-//   * Street-convention YTM, compounded at the coupon frequency, first period
-//     discounted by w = DSC / E; simple interest when one cash flow is left.
-//   * Regular schedule rolled back from maturity, no odd coupons, no ex-coupon period.
-//   * Dates are integer day numbers (days since 1970-01-01, UTC) so no time zone
-//     can move a date.
+/**
+ * bond.ts - the bond maths behind the page. No DOM, no network: pure functions.
+ *
+ * A line-for-line port of python/bond_returns.py, sections 2 to 4. The test suite
+ * checks the two implementations against each other on 962 cases (test/golden.json),
+ * so a change here needs the same change there.
+ *
+ * Reading order:
+ *   1. Dates       day numbers, month arithmetic, business days
+ *   2. Schedule    coupon dates, day counts, accrued interest  -> settleState()
+ *   3. Pricing     dirty price from a yield, and the YTM solver -> solveYtm()
+ *   4. Returns     current yield, holding-period return         -> computeMetrics()
+ *
+ * Conventions (docs/METHOD.md has the formulas and a worked example):
+ *   - Prices are per 100 of face value; yields are decimals (0.065 = 6.5%).
+ *   - Street-convention YTM: compounded at the coupon frequency, with the first period
+ *     cut to the fraction w = DSC / E that is left of it; simple interest when only one
+ *     cash flow remains (the Excel PRICE/YIELD and SIA rule).
+ *   - A regular schedule rolled back from maturity: no odd first or last coupon, no
+ *     ex-coupon period, weekends-only business days.
+ *   - Dates are whole day numbers (days since 1970-01-01, in UTC), so a browser's time
+ *     zone can never shift a date by one.
+ */
 
+/** A calendar date as a whole number of days since 1970-01-01 (UTC). */
 export type Day = number;
 export type DayCount = '30/360' | 'ACT/ACT' | 'ACT/365';
 export const DAY_COUNTS: DayCount[] = ['30/360', 'ACT/ACT', 'ACT/365'];
@@ -15,15 +30,18 @@ export const DAY_COUNTS: DayCount[] = ['30/360', 'ACT/ACT', 'ACT/365'];
 const MS_PER_DAY = 86_400_000;
 
 // ---------------------------------------------------------------------------
-// Dates
+// 1. Dates
 // ---------------------------------------------------------------------------
+/** Year, month (1-12), day -> day number. */
 export const toDay = (y: number, m: number, d: number): Day => Date.UTC(y, m - 1, d) / MS_PER_DAY;
 
+/** Day number -> [year, month (1-12), day]. */
 export function ymd(day: Day): [number, number, number] {
   const dt = new Date(day * MS_PER_DAY);
   return [dt.getUTCFullYear(), dt.getUTCMonth() + 1, dt.getUTCDate()];
 }
 
+/** 'YYYY-MM-DD' -> day number. Throws on malformed or impossible dates (e.g. 2026-02-30). */
 export function parseISO(s: string): Day {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s.trim());
   if (!m) throw new Error(`bad date ${JSON.stringify(s)}, expected YYYY-MM-DD`);
@@ -34,6 +52,7 @@ export function parseISO(s: string): Day {
   return day;
 }
 
+/** Day number -> 'YYYY-MM-DD'. */
 export const fmtISO = (day: Day): string => new Date(day * MS_PER_DAY).toISOString().slice(0, 10);
 
 const daysInMonth = (y: number, m: number): number => new Date(Date.UTC(y, m, 0)).getUTCDate();
@@ -72,8 +91,9 @@ export function previousBusinessDay(day: Day): Day {
 }
 
 // ---------------------------------------------------------------------------
-// Bond, schedule and day counts
+// 2. Bond, schedule and day counts
 // ---------------------------------------------------------------------------
+/** The bond's terms. Prices and redemption are per 100 of face value. */
 export interface Bond {
   faceValue: number;        // currency amount per bond; prices are per 100
   couponRate: number;       // annual, decimal; 0 for a zero-coupon bond
@@ -85,11 +105,14 @@ export interface Bond {
   simpleLastPeriod: boolean; // Excel/SIA: simple interest when one cash flow is left
 }
 
+/** Your holding: when the purchase settled and the clean price paid (per 100). */
 export interface Position {
   purchaseSettle: Day;
   purchaseClean: number;
 }
 
+/** A validated Bond. Unspecified fields default to a 6% semi-annual 30/360 bond,
+ *  1,000 face, redeemed at par. */
 export function makeBond(p: Partial<Bond> & Pick<Bond, 'maturity'>): Bond {
   const b: Bond = {
     faceValue: 1000, couponRate: 0.06, frequency: 2, dayCount: '30/360',
@@ -103,6 +126,7 @@ export function makeBond(p: Partial<Bond> & Pick<Bond, 'maturity'>): Bond {
   return b;
 }
 
+/** One coupon payment, per 100 face. */
 export const couponPerPeriod = (b: Bond): number => (100 * b.couponRate) / b.frequency;
 const monthEndBond = (b: Bond): boolean => b.eomRule && isMonthEnd(b.maturity);
 
@@ -138,6 +162,7 @@ export function days30360(d1: Day, d2: Day, monthEnd = false): number {
   return 360 * (y2 - y1) + 30 * (m2 - m1) + (dd2 - dd1);
 }
 
+/** One future payment. */
 export interface Cashflow {
   payDate: Day;
   coupon: number;    // per 100 face
@@ -145,6 +170,7 @@ export interface Cashflow {
   amount: number;
 }
 
+/** Everything about the bond that depends only on the settlement date. */
 export interface SettleState {
   settle: Day;
   prevCoupon: Day;
@@ -157,7 +183,17 @@ export interface SettleState {
   accrued: number; // per 100
 }
 
-/** Cash-flow schedule, day-count terms and accrued interest at `settle`. */
+/**
+ * Cash-flow schedule, day-count terms and accrued interest at `settle`.
+ *
+ * The day count decides three numbers: A (days accrued since the last coupon), E (days
+ * in the coupon period) and DSC (days to the next coupon). Accrued interest is the
+ * coupon times A/E, and w = DSC/E is the fraction of a period left before the first
+ * cash flow, which the price formula discounts by.
+ *   30/360   E = 360/f, A counted on 30-day months, DSC = E - A
+ *   ACT/ACT  all three in actual days (the ICMA rule used for Treasuries)
+ *   ACT/365  A and DSC in actual days, E = 365/f
+ */
 export function settleState(b: Bond, settle: Day): SettleState {
   const [prev, future] = couponDates(b, settle);
   const next = future[0];
@@ -184,7 +220,11 @@ export function settleState(b: Bond, settle: Day): SettleState {
   return { settle, prevCoupon: prev, nextCoupon: next, flows, A, E, DSC, w: DSC / E, accrued: (c * A) / E };
 }
 
-/** Coupons (per 100) paid in (start, end]. */
+/**
+ * Coupons (per 100) paid in (start, end].
+ * A coupon paid on the purchase settlement date went to the seller, so `start` is
+ * excluded; one paid on the current settlement date has been received, so `end` is in.
+ */
 export function couponsReceived(b: Bond, start: Day, end: Day): number {
   if (end <= start) return 0;
   const step = 12 / b.frequency;
@@ -198,9 +238,17 @@ export function couponsReceived(b: Bond, start: Day, end: Day): number {
 }
 
 // ---------------------------------------------------------------------------
-// Pricing and the YTM solver
+// 3. Pricing and the YTM solver
 // ---------------------------------------------------------------------------
-/** Dirty price per 100 at yield y and dP/dy:  P = sum_k CF_k / (1 + y/f)^(w + k - 1). */
+/**
+ * Dirty price per 100 at yield y, and its slope dP/dy (Newton-Raphson needs it).
+ *
+ *   P = sum_k CF_k / (1 + y/f)^(w + k - 1)
+ *
+ * Each cash flow is discounted by the number of coupon periods until it is paid: w for
+ * the first, w + 1 for the next, and so on. With one cash flow left (and
+ * simpleLastPeriod set) the market's simple-interest rule applies: P = CF / (1 + w*y/f).
+ */
 export function dirtyPrice(b: Bond, st: SettleState, y: number): [number, number] {
   const f = b.frequency, w = st.w;
   if (b.simpleLastPeriod && st.flows.length === 1) {
@@ -221,6 +269,7 @@ export function dirtyPrice(b: Bond, st: SettleState, y: number): [number, number
   return [pv, dpv];
 }
 
+/** Quoted (clean) price at yield y: the dirty price minus accrued interest. */
 export const cleanPrice = (b: Bond, st: SettleState, y: number): number => dirtyPrice(b, st, y)[0] - st.accrued;
 
 /** Start value: (annual coupon + pull to par per year) / average price. */
@@ -230,7 +279,12 @@ export function approxYtm(b: Bond, st: SettleState, clean: number): number {
   return Math.min(Math.max(y, -0.5 * b.frequency), 1.0);
 }
 
-/** Brent's method (zeroin). Needs g(a), g(b) of opposite sign. Returns [root, iterations]. */
+/**
+ * Brent's method (Numerical Recipes "zbrent"): bisection made fast with secant and
+ * inverse-quadratic steps. Guaranteed to converge once the root is bracketed, so it is
+ * the safety net when Newton-Raphson fails. Needs g(a) and g(b) of opposite sign.
+ * Returns [root, iterations].
+ */
 export function brent(g: (x: number) => number, a: number, b: number, xtol = 1e-15, maxIter = 500): [number, number] {
   const EPS = Number.EPSILON;
   let fa = g(a), fb = g(b);
@@ -264,7 +318,9 @@ export function brent(g: (x: number) => number, a: number, b: number, xtol = 1e-
   return [b, maxIter];
 }
 
+/** The solved yield and how it was found. */
 export interface YtmResult { ytm: number; method: 'newton' | 'brent'; iterations: number }
+/** One Newton-Raphson iteration, recorded when a trace array is passed to solveYtm(). */
 export interface NewtonStep { i: number; y: number; price: number; slope: number; diff: number }
 
 /**
@@ -293,7 +349,7 @@ export function solveYtm(b: Bond, st: SettleState, clean: number, guess?: number
     y = yNext;
   }
 
-  // Fallback: bracket the root, then Brent.
+  // Fallback: find lo < root < hi (price above target at lo, below at hi), then Brent.
   let lo = -0.01, hi = 0.1;
   for (let k = 0; k < 200; k++) {                    // g(lo) > 0: walk towards the floor
     if (lo > floor && g(lo) > 0) break;
@@ -309,8 +365,9 @@ export function solveYtm(b: Bond, st: SettleState, clean: number, guess?: number
 }
 
 // ---------------------------------------------------------------------------
-// Return metrics
+// 4. Return metrics
 // ---------------------------------------------------------------------------
+/** Everything the page shows for one price. Rates are decimals; prices per 100. */
 export interface Metrics {
   settle: Day;
   clean: number;
@@ -328,6 +385,14 @@ export interface Metrics {
   state: SettleState;
 }
 
+/**
+ * Every return figure for one clean price.
+ *   current yield   annual coupon / clean price
+ *   YTM             solveYtm(), warm-started from `ytmGuess` (the last tick's YTM)
+ *   HPR             (dirty now + coupons received - dirty paid) / dirty paid
+ *   annualised HPR  (1 + HPR)^(365 / days held) - 1
+ * HPR fields are null until a purchase date and price are given.
+ */
 export function computeMetrics(b: Bond, pos: Position | null, settle: Day, clean: number,
   ytmGuess?: number | null): Metrics {
   const st = settleState(b, settle);

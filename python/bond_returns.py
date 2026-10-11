@@ -1,39 +1,43 @@
 #!/usr/bin/env python3
 """
-bond_returns.py - live return metrics for a generic fixed-coupon bond.
+bond_returns.py - return metrics for a fixed-coupon bond, recomputed from live prices.
 
-Computes, every N seconds from a live clean price (or yield):
+This is the reference implementation of the bond maths and a command-line monitor.
+The web page (src/bond.ts) is a line-for-line TypeScript port of sections 2 to 4,
+and the test suite checks the two against each other (python/make_golden.py).
+
+What it computes from a clean price (or a yield), every N seconds:
     * accrued interest, clean and dirty price
     * current yield
-    * yield to maturity (Newton-Raphson, falling back to scipy brentq)
+    * yield to maturity (Newton-Raphson, falling back to scipy's brentq)
     * holding-period return since purchase (price change + accrued + coupons),
-      plus its annualised equivalent
+      and the same return annualised
 
-Conventions (see README.md in this folder for the formulas and a worked example):
-    * Prices are quoted per 100 of face value; yields are decimals (0.065 = 6.5%).
-    * YTM is the "street" yield: compounded at the coupon frequency, with the first
-      period discounted for the fractional period w = DSC / E (Excel PRICE/YIELD,
-      SIA, ICMA). When one cash flow is left, simple interest is used for it
-      (the Excel/SIA rule); set simple_last_period=False to keep compounding.
-    * Regular coupon schedule rolled back from maturity (no odd first/last coupons),
-      no ex-coupon period, weekend-only business-day calendar.
+Conventions (docs/METHOD.md has the formulas and a worked example):
+    * Prices are per 100 of face value; yields are decimals (0.065 = 6.5%).
+    * YTM is the "street" yield used by Excel PRICE/YIELD, SIA and ICMA: compounded at
+      the coupon frequency, with the first period cut to the fraction w = DSC / E that
+      is left of it. With one cash flow left, simple interest is used (set
+      simple_last_period=False to keep compounding).
+    * A regular coupon schedule rolled back from maturity (no odd first or last
+      coupon), no ex-coupon period, and a weekends-only business-day calendar.
 
-Dependencies:
-    Python >= 3.9
-    scipy >= 1.7          pip install scipy   (brentq fallback; a bisection fallback
-                                               is used if scipy is not installed)
-    Optional, live data only:
-    blpapi                Bloomberg Desktop/Server API (Terminal or B-PIPE login)
-    lseg-data             LSEG/Refinitiv Data Library (or the older refinitiv-data)
-    (the free "fedinvest" source needs nothing extra)
+Price sources (section 5, all behind get_live_price()):
+    mock        random walk with missing and stale ticks, for trying the loop
+    fedinvest   free US Treasury end-of-day prices, from the JSON the website serves
+    bloomberg   UNTESTED TEMPLATE for blpapi (Terminal or B-PIPE)
+    refinitiv   UNTESTED TEMPLATE for the LSEG/Refinitiv Data Library
 
-Usage:
-    python bond_returns.py --validate                 # validation + edge-case tests
-    python bond_returns.py --example                  # hand worked example, step by step
-    python bond_returns.py --source mock --interval 1 --iterations 10
-    python bond_returns.py --source fedinvest --ticker 91282CLW9 --interval 300
-    python bond_returns.py --config my_bond.json --source bloomberg \
-        --ticker "US91282CJZ59 Govt" --interval 15
+Requirements:
+    Python 3.9+. scipy (pip install scipy) for the brentq fallback; without it a
+    bisection fallback is used. blpapi or lseg-data only for those two templates.
+
+Usage (from the repository root):
+    python python/bond_returns.py --validate      # 14 validation and edge-case checks
+    python python/bond_returns.py --example       # the worked example, step by step
+    python python/bond_returns.py --source mock --interval 1 --iterations 10
+    python python/bond_returns.py --source fedinvest --ticker 91282CLW9 --interval 300
+    python python/bond_returns.py --config my_bond.json --source bloomberg --ticker "US91282CJZ59 Govt"
 """
 from __future__ import annotations
 
@@ -95,7 +99,7 @@ class Position:
 @dataclass(frozen=True)
 class FeedConfig:
     source: str = "mock"               # "mock" | "fedinvest" | "bloomberg" | "refinitiv"
-    ticker: str = "US0000000000 Corp"  # Bloomberg security or Refinitiv RIC
+    ticker: str = "US0000000000 Corp"  # Treasury CUSIP (fedinvest), Bloomberg security or Refinitiv RIC
     field: str = ""                    # blank -> PX_LAST (Bloomberg) / CF_LAST (Refinitiv)
     kind: str = "price"                # "price" (clean, per 100) or "yield" (decimal)
     interval_s: float = 5.0            # polling interval
@@ -108,7 +112,7 @@ class FeedConfig:
     mock_start: float = 98.50          # mock feed: first clean price (kind="price")
     mock_start_yield: float = 0.0662   # mock feed: first yield (kind="yield")
     mock_seed: int = 42
-    data_url: str = "https://hubertfong.github.io/bond-returns/data/treasury_prices.json"
+    data_url: str = "https://hubertfong.github.io/bond-returns/data/treasury_prices.json"  # fedinvest JSON (URL or file)
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +204,13 @@ class SettleState:
 
 
 def settle_state(bond: Bond, settle: date) -> SettleState:
-    """Cash-flow schedule, day-count terms and accrued interest at `settle`."""
+    """Cash-flow schedule, day-count terms and accrued interest at `settle`.
+
+    The day count decides three numbers: A (days accrued since the last coupon),
+    E (days in the coupon period) and DSC (days to the next coupon). Accrued
+    interest is the coupon times A/E, and w = DSC/E is the fraction of a period
+    left before the first cash flow, which the price formula discounts by.
+    """
     prev, future = coupon_dates(bond, settle)
     nxt, f = future[0], bond.frequency
     if bond.day_count == "30/360":
@@ -222,7 +232,11 @@ def settle_state(bond: Bond, settle: date) -> SettleState:
 
 
 def coupons_received(bond: Bond, start: date, end: date) -> float:
-    """Coupons (per 100) paid in (start, end]: owned on the record date."""
+    """Coupons (per 100) paid in (start, end].
+
+    A coupon paid on the purchase settlement date went to the seller, so `start` is
+    excluded; one paid on the current settlement date has been received, so `end`
+    is included."""
     if end <= start:
         return 0.0
     step = 12 // bond.frequency
@@ -241,9 +255,14 @@ def coupons_received(bond: Bond, start: date, end: date) -> float:
 # 3. Pricing and the YTM solver
 # ---------------------------------------------------------------------------
 def dirty_price(bond: Bond, st: SettleState, y: float) -> Tuple[float, float]:
-    """Dirty price per 100 at yield y, and dP/dy (used by Newton-Raphson).
+    """Dirty price per 100 at yield y, and its slope dP/dy (Newton-Raphson needs it).
 
         P_dirty = sum_k CF_k / (1 + y/f)^(w + k - 1),   k = 1..N
+
+    Each cash flow is discounted by the number of coupon periods until it is paid:
+    w for the first, w + 1 for the next, and so on. With one cash flow left and
+    simple_last_period set, the market's simple-interest rule applies instead:
+    P = CF / (1 + w*y/f).
     """
     f, w = bond.frequency, st.w
     if bond.simple_last_period and len(st.flows) == 1:
@@ -265,6 +284,7 @@ def dirty_price(bond: Bond, st: SettleState, y: float) -> Tuple[float, float]:
 
 
 def clean_price(bond: Bond, st: SettleState, y: float) -> float:
+    """Quoted (clean) price at yield y: the dirty price minus accrued interest."""
     return dirty_price(bond, st, y)[0] - st.accrued
 
 
@@ -362,6 +382,8 @@ class Metrics:
 
 def compute_metrics(bond: Bond, pos: Position, settle: date, clean: float,
                     ytm_guess: Optional[float] = None) -> Metrics:
+    """Every return figure for one price. `ytm_guess` (the last tick's YTM) lets
+    Newton-Raphson converge in one or two steps when the price barely moved."""
     st = settle_state(bond, settle)
     dirty = clean + st.accrued
     ytm, method, iters = solve_ytm(bond, st, clean, guess=ytm_guess)
@@ -385,6 +407,9 @@ def compute_metrics(bond: Bond, pos: Position, settle: date, clean: float,
 
 # ---------------------------------------------------------------------------
 # 5. Live data: everything goes through get_live_price()
+#
+# A source returns a Quote, or None when it has no value. The live loop (section 6)
+# decides what to do with missing, stale or implausible quotes.
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class Quote:
@@ -419,6 +444,41 @@ class MockFeed:
 
 
 _mock_feed: Optional[MockFeed] = None
+
+
+def treasury_row(feed: FeedConfig) -> Tuple[Optional[dict], str]:
+    """(row for CUSIP feed.ticker, price date) from the FedInvest JSON that
+    fetch_fedinvest.py writes and the GitHub Pages site serves (URL or local path)."""
+    from urllib.request import urlopen
+    if feed.data_url.startswith(("http://", "https://")):
+        with urlopen(f"{feed.data_url}?t={int(time.time())}", timeout=20) as resp:
+            data = json.load(resp)
+    else:
+        with open(feed.data_url) as fh:
+            data = json.load(fh)
+    row = next((r for r in data["securities"] if r["cusip"] == feed.ticker.strip().upper()), None)
+    return row, data["price_date"]
+
+
+def _fedinvest_quote(feed: FeedConfig) -> Optional[Quote]:
+    """Free US Treasury end-of-day clean price. One value per business day, so the
+    quote's age is hours, not seconds: raise stale_after_s accordingly."""
+    row, price_date = treasury_row(feed)
+    if row is None or not row.get("eod"):
+        return None
+    # FedInvest prices are struck early afternoon New York time; 13:00 ET ~ 17:00/18:00 UTC.
+    ts = datetime.fromisoformat(price_date).replace(hour=18, tzinfo=timezone.utc)
+    return Quote(float(row["eod"]), "price", ts, "fedinvest")
+
+
+# ---------------------------------------------------------------------------
+# 5b. UNTESTED TEMPLATES: Bloomberg and LSEG/Refinitiv
+#
+# These two connectors show how a paid feed plugs into get_live_price(). They were
+# written against the vendors' documented APIs but have NEVER been run against a
+# live terminal. Before relying on them, check the security identifiers, field
+# names (Bloomberg FLDS<GO>) and entitlements on your own installation.
+# ---------------------------------------------------------------------------
 _bbg_session = None
 _lseg = None
 
@@ -498,31 +558,6 @@ def _refinitiv_quote(feed: FeedConfig) -> Optional[Quote]:
     return Quote(value, feed.kind, ts, "refinitiv")
 
 
-def treasury_row(feed: FeedConfig) -> Tuple[Optional[dict], str]:
-    """(row for CUSIP feed.ticker, price date) from the FedInvest JSON that
-    fetch_fedinvest.py writes and the GitHub Pages site serves (URL or local path)."""
-    from urllib.request import urlopen
-    if feed.data_url.startswith(("http://", "https://")):
-        with urlopen(f"{feed.data_url}?t={int(time.time())}", timeout=20) as resp:
-            data = json.load(resp)
-    else:
-        with open(feed.data_url) as fh:
-            data = json.load(fh)
-    row = next((r for r in data["securities"] if r["cusip"] == feed.ticker.strip().upper()), None)
-    return row, data["price_date"]
-
-
-def _fedinvest_quote(feed: FeedConfig) -> Optional[Quote]:
-    """Free US Treasury end-of-day clean price. One value per business day, so the
-    quote's age is hours, not seconds: raise stale_after_s accordingly."""
-    row, price_date = treasury_row(feed)
-    if row is None or not row.get("eod"):
-        return None
-    # FedInvest prices are struck early afternoon New York time; 13:00 ET ~ 17:00/18:00 UTC.
-    ts = datetime.fromisoformat(price_date).replace(hour=18, tzinfo=timezone.utc)
-    return Quote(float(row["eod"]), "price", ts, "fedinvest")
-
-
 def get_live_price(feed: FeedConfig) -> Optional[Quote]:
     """THE single entry point for market data. Returns a Quote, or None when the
     source has no value. Swap the source with feed.source, or replace this
@@ -546,6 +581,15 @@ def get_live_price(feed: FeedConfig) -> Optional[Quote]:
 # 6. Real-time loop: fetch -> check -> recompute -> log
 # ---------------------------------------------------------------------------
 class LiveMonitor:
+    """Polls a price source and recomputes the metrics on every tick.
+
+    Each tick: work out today's settlement date, fetch a quote, reject anything
+    implausible (not a number, out of range, from the future, or a sudden jump that
+    is not repeated), fall back to the last good quote while it is recent enough,
+    flag quotes older than `stale_after_s`, then recompute and log one line.
+    Pass `fetch=` (and `clock=`) to drive it with a scripted feed in tests.
+    """
+
     def __init__(self, bond: Bond, pos: Position, feed: FeedConfig,
                  fetch: Callable[[FeedConfig], Optional[Quote]] = get_live_price,
                  clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)):
@@ -648,6 +692,7 @@ class LiveMonitor:
 # 7. Worked example and validation
 # ---------------------------------------------------------------------------
 def worked_example() -> None:
+    """Print docs/METHOD.md section 8 step by step, computed by this module."""
     bond, pos = Bond(), Position()
     settle, clean = date(2026, 10, 12), 98.50
     st = settle_state(bond, settle)
@@ -679,6 +724,7 @@ def worked_example() -> None:
 
 
 def run_validation() -> bool:
+    """Published examples, round trips and edge cases. Prints PASS/FAIL per check."""
     results: List[Tuple[str, bool, str]] = []
 
     def check(name: str, ok: bool, detail: str) -> None:

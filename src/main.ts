@@ -1,5 +1,20 @@
-// Page wiring: form -> bond/position -> getLivePrice() -> computeMetrics() -> render,
-// repeated every N seconds.
+/**
+ * main.ts - the page: reads the form, gets a price, recomputes, renders, repeats.
+ *
+ *   form inputs -> buildInputs() -> getLivePrice() -> computeMetrics() -> render
+ *        ^                                                                  |
+ *        +---------------- every N seconds, or on any form edit -----------+
+ *
+ * Sections:
+ *   Form state      read, write and remember (localStorage) the inputs
+ *   Treasury list   the CUSIP picker, filled from the price file
+ *   Rendering       the result tiles, details table, cash-flow table and log
+ *   The loop        tick(): one fetch -> check -> recompute -> render cycle
+ *   Start-up        init(): load prices, restore inputs, wire events, start the loop
+ *
+ * All finance lives in bond.ts and all data access in feed.ts; this file only
+ * connects them to the HTML in index.html.
+ */
 
 import './style.css';
 import {
@@ -14,6 +29,7 @@ import {
 // ---------------------------------------------------------------------------
 // Form state
 // ---------------------------------------------------------------------------
+/** The form's raw values (strings, as typed). Validated in buildInputs(). */
 interface FormState {
   source: 'fedinvest' | 'manual';
   cusip: string;
@@ -37,6 +53,7 @@ const FIELDS: (keyof FormState)[] = [
 ];
 const BOND_FIELDS: (keyof FormState)[] = ['couponPct', 'frequency', 'maturity', 'dayCount'];
 
+/** The example in docs/METHOD.md section 8: expect YTM 6.6164% and HPR 8.0711%. */
 const WORKED_EXAMPLE: FormState = {
   source: 'manual', cusip: '', manualPrice: '98.50', faceValue: '1000', couponPct: '6',
   frequency: '2', maturity: '2029-06-15', dayCount: '30/360', settleLag: '1',
@@ -76,6 +93,8 @@ function loadState(): FormState | null {
   }
 }
 
+/** Show the CUSIP or the manual-price field, and lock the bond terms in Treasury mode
+ *  (they come from the price file there). */
 function syncSourceUi(): void {
   const manual = $<HTMLInputElement>('srcManual').checked;
   $('cusipRow').hidden = manual;
@@ -94,6 +113,7 @@ function num(s: string, what: string): number {
   return v;
 }
 
+/** Turn the form into typed inputs. Throws a readable message on the first bad field. */
 function buildInputs(s: FormState): { bond: Bond; pos: Position | null; settle: Day; feed: FeedConfig } {
   const bond = makeBond({
     faceValue: num(s.faceValue, 'Face value'),
@@ -130,6 +150,8 @@ function fillDatalist(file: PriceFile): void {
     .map((r) => Object.assign(document.createElement('option'), { value: r.cusip, label: describe(r) })));
 }
 
+/** Fill coupon, maturity, frequency and day count from the price file for a CUSIP.
+ *  Treasuries pay semi-annually and accrue ACT/ACT. Returns false if the CUSIP is unknown. */
 function applyTreasury(cusip: string): boolean {
   const row = cachedPriceFile()?.securities.find((r) => r.cusip === cusip.toUpperCase());
   $('cusipInfo').textContent = row ? describe(row) : cusip ? 'Not in the latest FedInvest file' : '';
@@ -235,11 +257,20 @@ function showError(msg: string | null): void {
 // ---------------------------------------------------------------------------
 // The loop: fetch -> check -> recompute -> render
 // ---------------------------------------------------------------------------
-let lastGood: { key: string; quote: Quote } | null = null;
-let lastYtm: number | null = null;
-let timer: number | undefined;
-let nextAt = 0;
+let lastGood: { key: string; quote: Quote } | null = null; // keyed by bond, never reused for another
+let lastYtm: number | null = null;                          // warm start for the YTM solver
+let timer: number | undefined;                              // the pending refresh
+let nextAt = 0;                                             // when it fires, for the countdown
 
+/**
+ * One refresh:
+ *   1. Read and validate the form (an error is shown, nothing else happens).
+ *   2. Ask getLivePrice() for a quote and reject implausible values.
+ *   3. If there is no usable quote, reuse the last good one for the same bond (REUSED);
+ *      with nothing to reuse, show NO DATA.
+ *   4. Flag end-of-day prices older than the previous business day (STALE).
+ *   5. Recompute, warm-starting the YTM solver from the last result, and render.
+ */
 async function tick(): Promise<void> {
   const s = readForm();
   saveState(s);
@@ -301,6 +332,7 @@ async function tick(): Promise<void> {
   }
 }
 
+/** Arm the next refresh. setTimeout (not setInterval) so a slow refresh never overlaps the next. */
 function schedule(): void {
   window.clearTimeout(timer);
   const s = Math.max(5, Number(input('intervalS').value) || 60);
@@ -308,6 +340,7 @@ function schedule(): void {
   timer = window.setTimeout(async () => { await tick(); schedule(); }, s * 1000);
 }
 
+/** Refresh immediately and restart the countdown. */
 function runNow(): void {
   void tick();
   schedule();
@@ -316,6 +349,8 @@ function runNow(): void {
 // ---------------------------------------------------------------------------
 // Start-up
 // ---------------------------------------------------------------------------
+/** Load the price file, restore the last inputs (or pick a 10-year note), wire the
+ *  form events and start the loop. Form edits refresh after a 300 ms pause in typing. */
 async function init(): Promise<void> {
   setBadge('LOADING', 'Loading Treasury prices…');
   let file: PriceFile | null = null;

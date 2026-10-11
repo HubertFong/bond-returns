@@ -1,5 +1,13 @@
-// Same checks as `python python/bond_returns.py --validate`, plus a grid of cases
-// computed by the Python reference (test/golden.json, from python/make_golden.py).
+/**
+ * Tests for src/bond.ts and the staleness rule in src/feed.ts.
+ *
+ *   1. Published values: Microsoft's Excel YIELD and PRICE examples, and the worked
+ *      example in docs/METHOD.md.
+ *   2. Edge cases: every day count and frequency, zero-coupon bonds, settlement on a
+ *      coupon date, negative yields, the solver fallback, month-end schedules.
+ *   3. Cross-check: 962 cases computed by the Python reference (test/golden.json,
+ *      regenerate with `python python/make_golden.py`) must match to 1e-9.
+ */
 import { describe, expect, it } from 'vitest';
 import {
   type NewtonStep, addMonths, brent, cleanPrice, computeMetrics, couponDates, couponsReceived,

@@ -1,3 +1,8 @@
+/*
+ * style.css - one stylesheet, no framework.
+ * Colours are tokens on :root, redefined for dark mode; components only use the tokens.
+ * Layout: two columns (form | results) above 860px, one column below.
+ */
 :root {
   --bg: #f6f7f9;
   --panel: #ffffff;

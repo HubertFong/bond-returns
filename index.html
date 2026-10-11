@@ -8,6 +8,9 @@
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232456c9'/%3E%3Cpath d='M7 22 L13 15 L18 19 L25 10' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
   </head>
   <body>
+    <!-- Structure: header with the status badge; a form of inputs (left); results (right):
+         four headline tiles, a details table, the cash-flow schedule and an update log.
+         Element ids are the contract with src/main.ts. -->
     <header class="top">
       <div>
         <h1>Bond Returns</h1>
@@ -119,8 +122,9 @@
 
     <footer>
       Prices: <a href="https://www.treasurydirect.gov/GA-FI/FedInvest/selectSecurityPriceDate">US Treasury FedInvest</a> official end-of-day prices for marketable notes and bonds, refreshed each business day. They are not live intraday quotes.
-      Method and worked example: <a href="https://github.com/HubertFong/bond-returns/blob/main/docs/METHOD.md">docs/METHOD.md</a>.
-      Not investment advice.
+      <a href="https://github.com/HubertFong/bond-returns/blob/main/docs/USER_GUIDE.md">User guide</a> ·
+      <a href="https://github.com/HubertFong/bond-returns/blob/main/docs/METHOD.md">How the numbers are calculated</a>.
+      Not investment advice. © 2026 Hubert Fong.
     </footer>
 
     <script type="module" src="/src/main.ts"></script>
